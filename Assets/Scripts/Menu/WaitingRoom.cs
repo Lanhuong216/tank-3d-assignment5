@@ -120,11 +120,47 @@ public class WaitingRoom : MonoBehaviour
                 
                 if (NetworkManager.Singleton.ConnectedClients.TryGetValue(clientId, out var client))
                 {
-                    var readyComponent = client.PlayerObject?.GetComponent<PlayerReadyNetwork>();
-                    if (readyComponent != null)
+                    // Safely check if PlayerObject exists and hasn't been destroyed
+                    // Unity's fake null means we need to check both null and if the object is actually destroyed
+                    NetworkObject playerObj = client.PlayerObject;
+                    if (playerObj != null)
                     {
-                        isReady = readyComponent.IsReady;
-                        playerName = readyComponent.GetPlayerName();
+                        // Additional safety check: verify the GameObject is still valid
+                        // Check if the GameObject itself is null or destroyed
+                        if (playerObj.gameObject == null)
+                        {
+                            Debug.LogWarning($"PlayerObject GameObject for client {clientId} is null, skipping...");
+                            continue;
+                        }
+                        
+                        // Try to get the component, but handle potential destruction
+                        try
+                        {
+                            // Use a safer way to check if object is destroyed
+                            // If GetComponent throws MissingReferenceException, the object was destroyed
+                            var readyComponent = playerObj.GetComponent<PlayerReadyNetwork>();
+                            if (readyComponent != null)
+                            {
+                                // Double-check the component's GameObject is still valid
+                                if (readyComponent.gameObject != null)
+                                {
+                                    isReady = readyComponent.IsReady;
+                                    playerName = readyComponent.GetPlayerName();
+                                }
+                            }
+                        }
+                        catch (MissingReferenceException)
+                        {
+                            // PlayerObject was destroyed, skip this client
+                            Debug.LogWarning($"PlayerObject for client {clientId} was destroyed, skipping...");
+                            continue;
+                        }
+                        catch (System.Exception e)
+                        {
+                            // Catch any other exceptions related to destroyed objects
+                            Debug.LogWarning($"Error accessing PlayerObject for client {clientId}: {e.Message}. Skipping...");
+                            continue;
+                        }
                     }
                 }
 
@@ -176,9 +212,29 @@ public class WaitingRoom : MonoBehaviour
 
             if (NetworkManager.Singleton.ConnectedClients.TryGetValue(clientId, out var client))
             {
-                var readyComponent = client.PlayerObject?.GetComponent<PlayerReadyNetwork>();
-                if (readyComponent == null || !readyComponent.IsReady)
+                // Safely check PlayerObject
+                NetworkObject playerObj = client.PlayerObject;
+                if (playerObj == null || playerObj.gameObject == null)
                 {
+                    return false; // Player object not ready yet or was destroyed
+                }
+
+                try
+                {
+                    var readyComponent = playerObj.GetComponent<PlayerReadyNetwork>();
+                    if (readyComponent == null || readyComponent.gameObject == null || !readyComponent.IsReady)
+                    {
+                        return false;
+                    }
+                }
+                catch (MissingReferenceException)
+                {
+                    // PlayerObject was destroyed
+                    return false;
+                }
+                catch (System.Exception)
+                {
+                    // Any other error means not ready
                     return false;
                 }
             }

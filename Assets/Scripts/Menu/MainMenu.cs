@@ -13,6 +13,11 @@ public class MainMenu : MonoBehaviour
     public TMP_InputField m_IPInputField; // Thay thế InputField bằng TMP_InputField
     public Button m_ConfirmJoinButton;
     public Button m_CancelJoinButton;
+    public Text m_StatusText; // Optional status text for connection feedback
+
+    [Header("Network Settings")]
+    public ushort m_Port = 7777;
+    public float m_ConnectionTimeout = 10f; // Timeout in seconds for client connection
 
     private void Start()
     {
@@ -32,6 +37,14 @@ public class MainMenu : MonoBehaviour
         // Hide join panel initially
         if (m_JoinPanel != null)
             m_JoinPanel.SetActive(false);
+
+        // Subscribe to network events for connection feedback
+        if (NetworkManager.Singleton != null)
+        {
+            NetworkManager.Singleton.OnClientConnectedCallback += OnClientConnected;
+            NetworkManager.Singleton.OnClientDisconnectCallback += OnClientDisconnected;
+            NetworkManager.Singleton.OnTransportFailure += OnTransportFailure;
+        }
     }
 
     private void OnHostClicked()
@@ -65,74 +78,88 @@ public class MainMenu : MonoBehaviour
 
     private void StartHost()
     {
-        if (NetworkManager.Singleton != null)
+        if (NetworkManager.Singleton == null)
         {
-            // CRITICAL: Configure Unity Transport to listen on all network interfaces
-            // This allows clients from other machines on the network to connect
-            var transport = NetworkManager.Singleton.GetComponent<Unity.Netcode.Transports.UTP.UnityTransport>();
-            if (transport != null)
+            Debug.LogError("NetworkManager not found!");
+            UpdateStatus("Error: NetworkManager not found!");
+            return;
+        }
+
+        // CRITICAL: Configure Unity Transport to listen on all network interfaces
+        // This allows clients from other machines on the network to connect
+        var transport = NetworkManager.Singleton.GetComponent<Unity.Netcode.Transports.UTP.UnityTransport>();
+        if (transport == null)
+        {
+            Debug.LogError("UnityTransport component not found on NetworkManager!");
+            UpdateStatus("Error: UnityTransport not found!");
+            return;
+        }
+
+        // Set server to listen on all interfaces (0.0.0.0) to accept connections from network
+        // This is required for LAN connections, not just localhost
+        bool configured = false;
+        try
+        {
+            // Method 1: Try SetConnectionData with 0.0.0.0 (all interfaces) - works in most cases
+            try
             {
-                // Set server to listen on all interfaces (0.0.0.0) to accept connections from network
-                // This is required for LAN connections, not just localhost
-                try
+                transport.SetConnectionData("0.0.0.0", m_Port);
+                Debug.Log($"[HOST] Set to listen on 0.0.0.0:{m_Port} (all network interfaces)");
+                configured = true;
+            }
+            catch (System.Exception e1)
+            {
+                Debug.LogWarning($"SetConnectionData failed: {e1.Message}. Trying alternative methods...");
+            }
+
+            // Method 2: Try to set ServerListenAddress property (newer Unity Transport API)
+            if (!configured)
+            {
+                var transportType = transport.GetType();
+                var serverListenAddressProp = transportType.GetProperty("ServerListenAddress");
+                if (serverListenAddressProp != null && serverListenAddressProp.CanWrite)
                 {
-                    // Method 1: Try SetConnectionData with 0.0.0.0 (all interfaces)
-                    try
-                    {
-                        transport.SetConnectionData("0.0.0.0", 7777);
-                        Debug.Log("Set host to listen on 0.0.0.0:7777 (all network interfaces)");
-                    }
-                    catch
-                    {
-                        // Method 2: Set ConnectionData properties directly
-                        var connectionData = transport.ConnectionData;
-                        connectionData.Address = "0.0.0.0"; // Listen on all interfaces
-                        connectionData.Port = 7777;
-                        Debug.Log("Set ConnectionData.Address to 0.0.0.0 (all network interfaces)");
-                    }
-                    
-                    // Method 3: Try to set ServerListenAddress property if available
-                    // This is the proper way in newer Unity Transport versions
-                    var transportType = transport.GetType();
-                    var serverListenAddressProp = transportType.GetProperty("ServerListenAddress");
-                    if (serverListenAddressProp != null && serverListenAddressProp.CanWrite)
-                    {
-                        serverListenAddressProp.SetValue(transport, "0.0.0.0");
-                        Debug.Log("Set ServerListenAddress to 0.0.0.0 (all network interfaces)");
-                    }
-                    else
-                    {
-                        // Try alternative property names
-                        var serverAddressProp = transportType.GetProperty("ServerAddress");
-                        if (serverAddressProp != null && serverAddressProp.CanWrite)
-                        {
-                            serverAddressProp.SetValue(transport, "0.0.0.0");
-                            Debug.Log("Set ServerAddress to 0.0.0.0 (all network interfaces)");
-                        }
-                    }
-                }
-                catch (System.Exception e)
-                {
-                    Debug.LogWarning($"Could not fully configure server listen address: {e.Message}. Host may only accept localhost connections. Check firewall settings.");
+                    serverListenAddressProp.SetValue(transport, "0.0.0.0");
+                    Debug.Log($"[HOST] Set ServerListenAddress to 0.0.0.0:{m_Port} (all network interfaces)");
+                    configured = true;
                 }
             }
-            else
+
+            // Method 3: Set ConnectionData properties directly (fallback)
+            if (!configured)
             {
-                Debug.LogError("UnityTransport component not found on NetworkManager!");
+                var connectionData = transport.ConnectionData;
+                connectionData.Address = "0.0.0.0";
+                connectionData.Port = m_Port;
+                Debug.Log($"[HOST] Set ConnectionData.Address to 0.0.0.0:{m_Port} (fallback method)");
+                configured = true;
             }
-            
-            bool success = NetworkManager.Singleton.StartHost();
-            if (success)
-            {
-                Debug.Log("Host started successfully. Listening on all network interfaces (0.0.0.0:7777)");
-                Debug.Log("Clients can connect using your LAN IP address (e.g., 192.168.1.7:7777)");
-                // Load waiting scene
-                SceneManager.LoadScene("WaitingRoom");
-            }
-            else
-            {
-                Debug.LogError("Failed to start host!");
-            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Could not configure server listen address: {e.Message}");
+            UpdateStatus($"Warning: May only accept localhost connections. Check firewall.");
+        }
+
+        if (!configured)
+        {
+            Debug.LogWarning("Could not configure server to listen on all interfaces. Host may only accept localhost connections.");
+        }
+        
+        // Start host
+        bool success = NetworkManager.Singleton.StartHost();
+        if (success)
+        {
+            Debug.Log($"[HOST] Started successfully. Listening on 0.0.0.0:{m_Port}");
+            Debug.Log("[HOST] Clients can connect using your LAN IP address (e.g., 192.168.1.7:7777)");
+            UpdateStatus("Host started! Waiting for players...");
+            // Load waiting scene
+            SceneManager.LoadScene("WaitingRoom");
+        }
+        else
+        {
+            Debug.LogError("[HOST] Failed to start host!");
+            UpdateStatus("Error: Failed to start host! Check if port is available.");
         }
     }
 
@@ -183,47 +210,73 @@ public class MainMenu : MonoBehaviour
     {
         if (NetworkManager.Singleton == null)
         {
-            Debug.LogError("NetworkManager not found!");
+            Debug.LogError("[CLIENT] NetworkManager not found!");
+            UpdateStatus("Error: NetworkManager not found!");
             return;
         }
 
         // Set the connection data (IP address)
         var transport = NetworkManager.Singleton.GetComponent<Unity.Netcode.Transports.UTP.UnityTransport>();
-        if (transport != null)
+        if (transport == null)
         {
-            // Set connection data - try different API approaches
-            try
-            {
-                // Try SetConnectionData method (newer API)
-                transport.SetConnectionData(ipAddress, 7777);
-                Debug.Log($"Connecting to host at {ipAddress}:7777");
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogWarning($"SetConnectionData failed: {e.Message}. Trying fallback method.");
-                // Fallback: set ConnectionData properties directly
-                var connectionData = transport.ConnectionData;
-                connectionData.Address = ipAddress;
-                connectionData.Port = 7777;
-                Debug.Log($"Set connection data to {ipAddress}:7777 (fallback method)");
-            }
-        }
-        else
-        {
-            Debug.LogError("UnityTransport component not found on NetworkManager!");
+            Debug.LogError("[CLIENT] UnityTransport component not found on NetworkManager!");
+            UpdateStatus("Error: UnityTransport not found!");
             return;
         }
 
+        // Set connection data - try different API approaches
+        bool configured = false;
+        try
+        {
+            // Method 1: Try SetConnectionData method (newer API)
+            try
+            {
+                transport.SetConnectionData(ipAddress, m_Port);
+                Debug.Log($"[CLIENT] Connecting to host at {ipAddress}:{m_Port}");
+                configured = true;
+            }
+            catch (System.Exception e1)
+            {
+                Debug.LogWarning($"SetConnectionData failed: {e1.Message}. Trying fallback method.");
+            }
+
+            // Method 2: Fallback - set ConnectionData properties directly
+            if (!configured)
+            {
+                var connectionData = transport.ConnectionData;
+                connectionData.Address = ipAddress;
+                connectionData.Port = m_Port;
+                Debug.Log($"[CLIENT] Set connection data to {ipAddress}:{m_Port} (fallback method)");
+                configured = true;
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"[CLIENT] Failed to configure connection: {e.Message}");
+            UpdateStatus($"Error: Failed to configure connection to {ipAddress}");
+            return;
+        }
+
+        if (!configured)
+        {
+            Debug.LogError("[CLIENT] Could not configure transport!");
+            UpdateStatus("Error: Could not configure network transport!");
+            return;
+        }
+
+        // Start client
         bool success = NetworkManager.Singleton.StartClient();
         if (success)
         {
-            Debug.Log($"Client started. Attempting to connect to {ipAddress}:7777");
-            // Load waiting scene after connection is established
-            StartCoroutine(WaitForConnectionAndLoadScene());
+            Debug.Log($"[CLIENT] Started. Attempting to connect to {ipAddress}:{m_Port}");
+            UpdateStatus($"Connecting to {ipAddress}...");
+            // Wait for connection with timeout
+            StartCoroutine(WaitForConnectionAndLoadScene(ipAddress));
         }
         else
         {
-            Debug.LogError("Failed to start client!");
+            Debug.LogError("[CLIENT] Failed to start client!");
+            UpdateStatus("Error: Failed to start client!");
         }
     }
 
@@ -234,19 +287,80 @@ public class MainMenu : MonoBehaviour
             m_JoinPanel.SetActive(false);
     }
 
-    private IEnumerator WaitForConnectionAndLoadScene()
+    private IEnumerator WaitForConnectionAndLoadScene(string ipAddress)
     {
-        // Wait for client to connect
-        while (NetworkManager.Singleton != null && !NetworkManager.Singleton.IsClient)
+        float elapsedTime = 0f;
+        bool connected = false;
+
+        // Wait for client to connect with timeout
+        while (NetworkManager.Singleton != null && !NetworkManager.Singleton.IsClient && elapsedTime < m_ConnectionTimeout)
         {
+            // Check if we're actually connected
+            if (NetworkManager.Singleton.IsClient && NetworkManager.Singleton.IsConnectedClient)
+            {
+                connected = true;
+                break;
+            }
+
+            elapsedTime += Time.deltaTime;
             yield return null;
+        }
+
+        if (!connected)
+        {
+            Debug.LogError($"[CLIENT] Connection timeout after {m_ConnectionTimeout} seconds. Could not connect to {ipAddress}:{m_Port}");
+            UpdateStatus($"Connection failed! Could not connect to {ipAddress}");
+            
+            // Shutdown failed connection
+            if (NetworkManager.Singleton != null)
+            {
+                NetworkManager.Singleton.Shutdown();
+            }
+            
+            yield break;
         }
 
         // Small delay to ensure connection is stable
         yield return new WaitForSeconds(0.5f);
 
+        Debug.Log($"[CLIENT] Successfully connected to {ipAddress}:{m_Port}");
+        UpdateStatus("Connected! Loading...");
+
         // Load waiting scene
         SceneManager.LoadScene("WaitingRoom");
+    }
+
+    private void OnClientConnected(ulong clientId)
+    {
+        if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsClient)
+        {
+            Debug.Log($"[CLIENT] Successfully connected to server (Client ID: {clientId})");
+            UpdateStatus("Connected!");
+        }
+    }
+
+    private void OnClientDisconnected(ulong clientId)
+    {
+        if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsClient)
+        {
+            Debug.LogWarning($"[CLIENT] Disconnected from server (Client ID: {clientId})");
+            UpdateStatus("Disconnected from server!");
+        }
+    }
+
+    private void OnTransportFailure()
+    {
+        Debug.LogError("[NETWORK] Transport failure occurred!");
+        UpdateStatus("Network error! Check connection and firewall.");
+    }
+
+    private void UpdateStatus(string message)
+    {
+        if (m_StatusText != null)
+        {
+            m_StatusText.text = message;
+        }
+        Debug.Log($"[STATUS] {message}");
     }
 
     private void OnDestroy()
@@ -263,5 +377,14 @@ public class MainMenu : MonoBehaviour
         
         if (m_CancelJoinButton != null)
             m_CancelJoinButton.onClick.RemoveListener(OnCancelJoinClicked);
+
+        // Unsubscribe from network events
+        if (NetworkManager.Singleton != null)
+        {
+            NetworkManager.Singleton.OnClientConnectedCallback -= OnClientConnected;
+            NetworkManager.Singleton.OnClientDisconnectCallback -= OnClientDisconnected;
+            NetworkManager.Singleton.OnTransportFailure -= OnTransportFailure;
+        }
     }
 }
+
