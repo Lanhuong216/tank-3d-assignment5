@@ -95,6 +95,9 @@ public class MainMenu : MonoBehaviour
             return;
         }
 
+        // Optimize Unity Transport settings to reduce packet send failures
+        OptimizeTransportSettings(transport);
+
         // Set server to listen on all interfaces (0.0.0.0) to accept connections from network
         // This is required for LAN connections, not just localhost
         bool configured = false;
@@ -223,6 +226,9 @@ public class MainMenu : MonoBehaviour
             UpdateStatus("Error: UnityTransport not found!");
             return;
         }
+
+        // Optimize Unity Transport settings to reduce packet send failures
+        OptimizeTransportSettings(transport);
 
         // Set connection data - try different API approaches
         bool configured = false;
@@ -361,6 +367,77 @@ public class MainMenu : MonoBehaviour
             m_StatusText.text = message;
         }
         Debug.Log($"[STATUS] {message}");
+    }
+
+    /// <summary>
+    /// Optimize Unity Transport settings to reduce packet send failures
+    /// Increases buffer sizes and adjusts network parameters
+    /// </summary>
+    private void OptimizeTransportSettings(Unity.Netcode.Transports.UTP.UnityTransport transport)
+    {
+        if (transport == null) return;
+
+        try
+        {
+            var transportType = transport.GetType();
+
+            // Try to increase send/receive buffer sizes to reduce packet failures
+            // These properties may not exist in all Unity Transport versions, so we use reflection
+
+            // Maximum Send Queue Size (default is usually 64KB, increase to 256KB)
+            var maxSendQueueSizeProp = transportType.GetProperty("MaxSendQueueSize");
+            if (maxSendQueueSizeProp != null && maxSendQueueSizeProp.CanWrite)
+            {
+                maxSendQueueSizeProp.SetValue(transport, 262144); // 256 KB
+                Debug.Log("[TRANSPORT] Set MaxSendQueueSize to 256KB");
+            }
+
+            // Maximum Receive Queue Size
+            var maxReceiveQueueSizeProp = transportType.GetProperty("MaxReceiveQueueSize");
+            if (maxReceiveQueueSizeProp != null && maxReceiveQueueSizeProp.CanWrite)
+            {
+                maxReceiveQueueSizeProp.SetValue(transport, 262144); // 256 KB
+                Debug.Log("[TRANSPORT] Set MaxReceiveQueueSize to 256KB");
+            }
+
+            // Packet Buffer Size
+            var packetBufferSizeProp = transportType.GetProperty("PacketBufferSize");
+            if (packetBufferSizeProp != null && packetBufferSizeProp.CanWrite)
+            {
+                packetBufferSizeProp.SetValue(transport, 65536); // 64 KB
+                Debug.Log("[TRANSPORT] Set PacketBufferSize to 64KB");
+            }
+
+            // Heartbeat Timeout (increase to reduce false disconnections)
+            var heartbeatTimeoutProp = transportType.GetProperty("HeartbeatTimeoutMS");
+            if (heartbeatTimeoutProp != null && heartbeatTimeoutProp.CanWrite)
+            {
+                heartbeatTimeoutProp.SetValue(transport, 5000); // 5 seconds
+                Debug.Log("[TRANSPORT] Set HeartbeatTimeoutMS to 5000ms");
+            }
+
+            // Connection Timeout
+            var connectionTimeoutProp = transportType.GetProperty("ConnectionTimeoutMS");
+            if (connectionTimeoutProp != null && connectionTimeoutProp.CanWrite)
+            {
+                connectionTimeoutProp.SetValue(transport, 10000); // 10 seconds
+                Debug.Log("[TRANSPORT] Set ConnectionTimeoutMS to 10000ms");
+            }
+
+            // Disconnect Timeout
+            var disconnectTimeoutProp = transportType.GetProperty("DisconnectTimeoutMS");
+            if (disconnectTimeoutProp != null && disconnectTimeoutProp.CanWrite)
+            {
+                disconnectTimeoutProp.SetValue(transport, 30000); // 30 seconds
+                Debug.Log("[TRANSPORT] Set DisconnectTimeoutMS to 30000ms");
+            }
+        }
+        catch (System.Exception e)
+        {
+            // Some properties may not exist in all Unity Transport versions
+            // This is not critical, so we just log a warning
+            Debug.LogWarning($"[TRANSPORT] Could not optimize all transport settings: {e.Message}. This is usually not critical.");
+        }
     }
 
     private void OnDestroy()
