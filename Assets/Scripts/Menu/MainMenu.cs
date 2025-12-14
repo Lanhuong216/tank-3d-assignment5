@@ -32,42 +32,6 @@ public class MainMenu : MonoBehaviour
         // Hide join panel initially
         if (m_JoinPanel != null)
             m_JoinPanel.SetActive(false);
-
-        // Subscribe to network events for connection status
-        if (NetworkManager.Singleton != null)
-        {
-            NetworkManager.Singleton.OnClientConnectedCallback += OnClientConnected;
-            NetworkManager.Singleton.OnClientDisconnectCallback += OnClientDisconnected;
-            NetworkManager.Singleton.OnTransportFailure += OnTransportFailure;
-        }
-    }
-
-    private void OnClientConnected(ulong clientId)
-    {
-        Debug.Log($"Client connected successfully! Client ID: {clientId}");
-        // If we're a client connecting to a host, load waiting room
-        if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsClient && !NetworkManager.Singleton.IsServer)
-        {
-            Debug.Log("Client connected to host. Loading waiting room...");
-            SceneManager.LoadScene("WaitingRoom");
-        }
-    }
-
-    private void OnClientDisconnected(ulong clientId)
-    {
-        if (clientId == NetworkManager.ServerClientId)
-        {
-            Debug.LogError("Disconnected from server!");
-        }
-        else
-        {
-            Debug.Log($"Client {clientId} disconnected.");
-        }
-    }
-
-    private void OnTransportFailure()
-    {
-        Debug.LogError("Transport failure occurred! Check network connection and firewall settings.");
     }
 
     private void OnHostClicked()
@@ -230,38 +194,18 @@ public class MainMenu : MonoBehaviour
             // Set connection data - try different API approaches
             try
             {
-                // Method 1: Try SetConnectionData method (newer API)
-                try
-                {
-                    transport.SetConnectionData(ipAddress, 7777);
-                    Debug.Log($"[CLIENT] Set connection data to {ipAddress}:7777 using SetConnectionData");
-                }
-                catch
-                {
-                    // Method 2: Set ConnectionData properties directly
-                    var connectionData = transport.ConnectionData;
-                    connectionData.Address = ipAddress;
-                    connectionData.Port = 7777;
-                    Debug.Log($"[CLIENT] Set connection data to {ipAddress}:7777 using ConnectionData property");
-                }
-
-                // Method 3: Try setting ServerAddress property (for some Unity Transport versions)
-                var transportType = transport.GetType();
-                var serverAddressProp = transportType.GetProperty("ServerAddress");
-                if (serverAddressProp != null && serverAddressProp.CanWrite)
-                {
-                    serverAddressProp.SetValue(transport, ipAddress);
-                    Debug.Log($"[CLIENT] Set ServerAddress property to {ipAddress}");
-                }
-
-                // Verify the connection data was set correctly
-                var verifyData = transport.ConnectionData;
-                Debug.Log($"[CLIENT] Verified connection data - Address: {verifyData.Address}, Port: {verifyData.Port}");
+                // Try SetConnectionData method (newer API)
+                transport.SetConnectionData(ipAddress, 7777);
+                Debug.Log($"Connecting to host at {ipAddress}:7777");
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"[CLIENT] Failed to set connection data: {e.Message}\nStackTrace: {e.StackTrace}");
-                return;
+                Debug.LogWarning($"SetConnectionData failed: {e.Message}. Trying fallback method.");
+                // Fallback: set ConnectionData properties directly
+                var connectionData = transport.ConnectionData;
+                connectionData.Address = ipAddress;
+                connectionData.Port = 7777;
+                Debug.Log($"Set connection data to {ipAddress}:7777 (fallback method)");
             }
         }
         else
@@ -270,17 +214,16 @@ public class MainMenu : MonoBehaviour
             return;
         }
 
-        // Start client with timeout handling
         bool success = NetworkManager.Singleton.StartClient();
         if (success)
         {
-            Debug.Log($"[CLIENT] Client started. Attempting to connect to {ipAddress}:7777");
-            // Start timeout coroutine
-            StartCoroutine(WaitForConnectionWithTimeout(ipAddress));
+            Debug.Log($"Client started. Attempting to connect to {ipAddress}:7777");
+            // Load waiting scene after connection is established
+            StartCoroutine(WaitForConnectionAndLoadScene());
         }
         else
         {
-            Debug.LogError("[CLIENT] Failed to start client! Check NetworkManager configuration.");
+            Debug.LogError("Failed to start client!");
         }
     }
 
@@ -291,74 +234,23 @@ public class MainMenu : MonoBehaviour
             m_JoinPanel.SetActive(false);
     }
 
-    private IEnumerator WaitForConnectionWithTimeout(string ipAddress)
+    private IEnumerator WaitForConnectionAndLoadScene()
     {
-        float timeout = 10f; // 10 seconds timeout
-        float elapsedTime = 0f;
-        bool connected = false;
-
-        Debug.Log($"[CLIENT] Waiting for connection to {ipAddress}:7777 (timeout: {timeout}s)...");
-
-        // Wait for client to connect or timeout
-        while (NetworkManager.Singleton != null && elapsedTime < timeout)
+        // Wait for client to connect
+        while (NetworkManager.Singleton != null && !NetworkManager.Singleton.IsClient)
         {
-            // Check if we're connected
-            if (NetworkManager.Singleton.IsClient && NetworkManager.Singleton.IsConnectedClient)
-            {
-                connected = true;
-                Debug.Log($"[CLIENT] Successfully connected to {ipAddress}:7777!");
-                break;
-            }
-
-            // Check if connection failed
-            if (NetworkManager.Singleton.IsClient && !NetworkManager.Singleton.IsConnectedClient)
-            {
-                // Still trying to connect
-                yield return new WaitForSeconds(0.1f);
-                elapsedTime += 0.1f;
-                continue;
-            }
-
-            yield return new WaitForSeconds(0.1f);
-            elapsedTime += 0.1f;
+            yield return null;
         }
 
-        if (!connected)
-        {
-            Debug.LogError($"[CLIENT] Connection timeout! Could not connect to {ipAddress}:7777 after {timeout} seconds.");
-            Debug.LogError("[CLIENT] Possible causes:");
-            Debug.LogError("  1. Host is not running or not listening on the network");
-            Debug.LogError("  2. Firewall is blocking the connection (check Windows Firewall)");
-            Debug.LogError("  3. IP address is incorrect");
-            Debug.LogError("  4. Host and client are not on the same network");
-            Debug.LogError("  5. Port 7777 is blocked or in use");
-            
-            // Shutdown failed connection
-            if (NetworkManager.Singleton != null)
-            {
-                NetworkManager.Singleton.Shutdown();
-            }
-        }
-        else
-        {
-            // Small delay to ensure connection is stable
-            yield return new WaitForSeconds(0.5f);
-            Debug.Log("[CLIENT] Connection stable. Loading waiting room...");
-            // Load waiting scene
-            SceneManager.LoadScene("WaitingRoom");
-        }
+        // Small delay to ensure connection is stable
+        yield return new WaitForSeconds(0.5f);
+
+        // Load waiting scene
+        SceneManager.LoadScene("WaitingRoom");
     }
 
     private void OnDestroy()
     {
-        // Unsubscribe from network events
-        if (NetworkManager.Singleton != null)
-        {
-            NetworkManager.Singleton.OnClientConnectedCallback -= OnClientConnected;
-            NetworkManager.Singleton.OnClientDisconnectCallback -= OnClientDisconnected;
-            NetworkManager.Singleton.OnTransportFailure -= OnTransportFailure;
-        }
-
         // Clean up listeners
         if (m_HostButton != null)
             m_HostButton.onClick.RemoveListener(OnHostClicked);
